@@ -1,4 +1,4 @@
-name: AI DevOps Agent CI
+name: AI DevOps Agent CI/CD
 
 on:
   push:
@@ -27,49 +27,23 @@ jobs:
 
     steps:
 
-      # --------------------------------------------------------
-      # Checkout
-      # --------------------------------------------------------
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-
-      # --------------------------------------------------------
-      # Setup Python
-      # --------------------------------------------------------
 
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-
-      # --------------------------------------------------------
-      # Create virtual environment
-      # --------------------------------------------------------
-
       - name: Create virtual environment
         run: |
           python -m venv .venv
 
-
-      # --------------------------------------------------------
-      # Install dependencies
-      # --------------------------------------------------------
-
       - name: Install Python dependencies
         run: |
           . .venv/bin/activate
-
           python -m pip install --upgrade pip
-
           pip install -r requirements.txt
-
-
-      # --------------------------------------------------------
-      # Python syntax check
-      # --------------------------------------------------------
 
       - name: Python syntax check
         run: |
@@ -79,19 +53,11 @@ jobs:
           python -m py_compile agent/agent.py
           python -m py_compile tools/aws.py
           python -m py_compile tools/terraform.py
-          python -m py_compile test_aws.py
-          python -m py_compile test_ollama.py
 
           echo "Python syntax check passed."
 
-
-      # --------------------------------------------------------
-      # Project structure check
-      # --------------------------------------------------------
-
       - name: Check project structure
         run: |
-
           test -f main.py
           test -f agent/agent.py
           test -f tools/aws.py
@@ -102,12 +68,12 @@ jobs:
 
 
   # ============================================================
-  # JOB 2 - Terraform CI
+  # JOB 2 - Terraform Plan
   # ============================================================
 
-  terraform-ci:
+  terraform-plan:
 
-    name: Terraform CI
+    name: Terraform Plan
 
     runs-on: ubuntu-latest
 
@@ -118,7 +84,7 @@ jobs:
     steps:
 
       # --------------------------------------------------------
-      # Checkout repository
+      # Checkout
       # --------------------------------------------------------
 
       - name: Checkout repository
@@ -134,70 +100,7 @@ jobs:
 
 
       # --------------------------------------------------------
-      # Debug GitHub OIDC
-      # --------------------------------------------------------
-
-      - name: Debug GitHub OIDC
-        shell: bash
-        run: |
-
-          echo "=========================================="
-          echo "GitHub OIDC Debug Information"
-          echo "=========================================="
-
-          echo "Repository : $GITHUB_REPOSITORY"
-          echo "Ref        : $GITHUB_REF"
-          echo "Event      : $GITHUB_EVENT_NAME"
-          echo "Actor      : $GITHUB_ACTOR"
-
-          echo ""
-          echo "Requesting GitHub OIDC token..."
-
-          TOKEN_RESPONSE=$(curl -sS \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
-
-          TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.value')
-
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "ERROR: Unable to obtain GitHub OIDC token."
-            exit 1
-          fi
-
-          echo "OIDC token successfully obtained."
-
-          PAYLOAD=$(echo "$TOKEN" | cut -d '.' -f2)
-
-          case $((${#PAYLOAD} % 4)) in
-            2)
-              PAYLOAD="${PAYLOAD}=="
-              ;;
-            3)
-              PAYLOAD="${PAYLOAD}="
-              ;;
-          esac
-
-          echo ""
-          echo "OIDC claims:"
-          echo "------------------------------------------"
-
-          echo "$PAYLOAD" \
-            | base64 -d 2>/dev/null \
-            | jq '{
-                iss,
-                aud,
-                sub,
-                repository,
-                repository_owner,
-                ref,
-                event_name
-              }'
-
-          echo "=========================================="
-
-
-      # --------------------------------------------------------
-      # Configure AWS credentials using GitHub OIDC
+      # Configure AWS OIDC
       # --------------------------------------------------------
 
       - name: Configure AWS credentials
@@ -205,7 +108,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::444083008248:role/GitHubActions-Terraform-Role
           aws-region: ap-south-1
-          role-session-name: GitHubActionsTerraform
+          role-session-name: GitHubActionsTerraformPlan
           audience: sts.amazonaws.com
 
 
@@ -215,19 +118,15 @@ jobs:
 
       - name: Verify AWS identity
         run: |
-
-          echo "AWS identity:"
-
           aws sts get-caller-identity
 
 
       # --------------------------------------------------------
-      # Terraform Format Check
+      # Terraform Format
       # --------------------------------------------------------
 
       - name: Terraform Format Check
         run: |
-
           terraform fmt -check -recursive
 
 
@@ -237,7 +136,6 @@ jobs:
 
       - name: Terraform Init
         run: |
-
           terraform init -input=false
 
 
@@ -247,7 +145,6 @@ jobs:
 
       - name: Terraform Validate
         run: |
-
           terraform validate
 
 
@@ -257,5 +154,265 @@ jobs:
 
       - name: Terraform Plan
         run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan
 
-          terraform plan -input=false
+
+      # --------------------------------------------------------
+      # Upload Terraform Plan
+      # --------------------------------------------------------
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/tfplan
+          retention-days: 1
+
+
+  # ============================================================
+  # JOB 3 - Terraform Apply
+  # ============================================================
+
+  terraform-apply:
+
+    name: Terraform Apply
+
+    needs:
+      - terraform-plan
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+
+      # --------------------------------------------------------
+      # Checkout
+      # --------------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # --------------------------------------------------------
+      # Setup Terraform
+      # --------------------------------------------------------
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+
+      # --------------------------------------------------------
+      # Configure AWS OIDC
+      # --------------------------------------------------------
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::444083008248:role/GitHubActions-Terraform-Role
+          aws-region: ap-south-1
+          role-session-name: GitHubActionsTerraformApply
+          audience: sts.amazonaws.com
+
+
+      # --------------------------------------------------------
+      # Verify AWS identity
+      # --------------------------------------------------------
+
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
+
+      # --------------------------------------------------------
+      # Terraform Init
+      # --------------------------------------------------------
+
+      - name: Terraform Init
+        run: |
+          terraform init -input=false
+
+
+      # --------------------------------------------------------
+      # Download approved plan
+      # --------------------------------------------------------
+
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform
+
+
+      # --------------------------------------------------------
+      # Terraform Apply
+      # --------------------------------------------------------
+
+      - name: Terraform Apply
+        run: |
+          terraform apply \
+            -input=false \
+            -auto-approve \
+
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+B
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+A
+            tfplan
