@@ -27,23 +27,49 @@ jobs:
 
     steps:
 
+      # --------------------------------------------------------
+      # Checkout
+      # --------------------------------------------------------
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+
+      # --------------------------------------------------------
+      # Setup Python
+      # --------------------------------------------------------
 
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
+
+      # --------------------------------------------------------
+      # Create virtual environment
+      # --------------------------------------------------------
+
       - name: Create virtual environment
         run: |
           python -m venv .venv
 
+
+      # --------------------------------------------------------
+      # Install dependencies
+      # --------------------------------------------------------
+
       - name: Install Python dependencies
         run: |
           . .venv/bin/activate
+
           python -m pip install --upgrade pip
+
           pip install -r requirements.txt
+
+
+      # --------------------------------------------------------
+      # Python syntax check
+      # --------------------------------------------------------
 
       - name: Python syntax check
         run: |
@@ -58,8 +84,14 @@ jobs:
 
           echo "Python syntax check passed."
 
+
+      # --------------------------------------------------------
+      # Project structure check
+      # --------------------------------------------------------
+
       - name: Check project structure
         run: |
+
           test -f main.py
           test -f agent/agent.py
           test -f tools/aws.py
@@ -70,21 +102,47 @@ jobs:
 
 
   # ============================================================
-  # JOB 2 - GitHub OIDC Debug
+  # JOB 2 - Terraform CI
   # ============================================================
 
-  oidc-debug:
+  terraform-ci:
 
-    name: GitHub OIDC Debug
+    name: Terraform CI
 
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: terraform
+
     steps:
 
-      - name: Debug GitHub information
+      # --------------------------------------------------------
+      # Checkout repository
+      # --------------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # --------------------------------------------------------
+      # Setup Terraform
+      # --------------------------------------------------------
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+
+      # --------------------------------------------------------
+      # Debug GitHub OIDC
+      # --------------------------------------------------------
+
+      - name: Debug GitHub OIDC
+        shell: bash
         run: |
+
           echo "=========================================="
-          echo "GitHub Actions Information"
+          echo "GitHub OIDC Debug Information"
           echo "=========================================="
 
           echo "Repository : $GITHUB_REPOSITORY"
@@ -92,23 +150,17 @@ jobs:
           echo "Event      : $GITHUB_EVENT_NAME"
           echo "Actor      : $GITHUB_ACTOR"
 
-          echo "=========================================="
-
-      - name: Request GitHub OIDC token
-        shell: bash
-        run: |
-
+          echo ""
           echo "Requesting GitHub OIDC token..."
 
-          RESPONSE=$(curl -sS \
+          TOKEN_RESPONSE=$(curl -sS \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
 
-          TOKEN=$(echo "$RESPONSE" | jq -r '.value')
+          TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.value')
 
           if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "ERROR: Could not obtain OIDC token."
-            echo "$RESPONSE"
+            echo "ERROR: Unable to obtain GitHub OIDC token."
             exit 1
           fi
 
@@ -126,9 +178,8 @@ jobs:
           esac
 
           echo ""
-          echo "=========================================="
-          echo "OIDC CLAIMS"
-          echo "=========================================="
+          echo "OIDC claims:"
+          echo "------------------------------------------"
 
           echo "$PAYLOAD" \
             | base64 -d 2>/dev/null \
@@ -143,3 +194,68 @@ jobs:
               }'
 
           echo "=========================================="
+
+
+      # --------------------------------------------------------
+      # Configure AWS credentials using GitHub OIDC
+      # --------------------------------------------------------
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::444083008248:role/GitHubActions-Terraform-Role
+          aws-region: ap-south-1
+          role-session-name: GitHubActionsTerraform
+          audience: sts.amazonaws.com
+
+
+      # --------------------------------------------------------
+      # Verify AWS identity
+      # --------------------------------------------------------
+
+      - name: Verify AWS identity
+        run: |
+
+          echo "AWS identity:"
+
+          aws sts get-caller-identity
+
+
+      # --------------------------------------------------------
+      # Terraform Format Check
+      # --------------------------------------------------------
+
+      - name: Terraform Format Check
+        run: |
+
+          terraform fmt -check -recursive
+
+
+      # --------------------------------------------------------
+      # Terraform Init
+      # --------------------------------------------------------
+
+      - name: Terraform Init
+        run: |
+
+          terraform init -input=false
+
+
+      # --------------------------------------------------------
+      # Terraform Validate
+      # --------------------------------------------------------
+
+      - name: Terraform Validate
+        run: |
+
+          terraform validate
+
+
+      # --------------------------------------------------------
+      # Terraform Plan
+      # --------------------------------------------------------
+
+      - name: Terraform Plan
+        run: |
+
+          terraform plan -input=false
