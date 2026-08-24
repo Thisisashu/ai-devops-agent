@@ -70,47 +70,21 @@ jobs:
 
 
   # ============================================================
-  # JOB 2 - Terraform CI
+  # JOB 2 - GitHub OIDC Debug
   # ============================================================
 
-  terraform-ci:
+  oidc-debug:
 
-    name: Terraform CI
+    name: GitHub OIDC Debug
 
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: terraform
-
     steps:
 
-      # --------------------------------------------------------
-      # Checkout
-      # --------------------------------------------------------
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-
-      # --------------------------------------------------------
-      # Terraform installation
-      # --------------------------------------------------------
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-
-      # --------------------------------------------------------
-      # Debug GitHub OIDC claims
-      # --------------------------------------------------------
-
-      - name: Debug GitHub OIDC
-        shell: bash
+      - name: Debug GitHub information
         run: |
-
           echo "=========================================="
-          echo "GitHub OIDC Debug Information"
+          echo "GitHub Actions Information"
           echo "=========================================="
 
           echo "Repository : $GITHUB_REPOSITORY"
@@ -118,28 +92,43 @@ jobs:
           echo "Event      : $GITHUB_EVENT_NAME"
           echo "Actor      : $GITHUB_ACTOR"
 
-          echo ""
-          echo "OIDC token claims:"
-          echo "------------------------------------------"
+          echo "=========================================="
 
-          TOKEN_RESPONSE=$(curl -sS \
+      - name: Request GitHub OIDC token
+        shell: bash
+        run: |
+
+          echo "Requesting GitHub OIDC token..."
+
+          RESPONSE=$(curl -sS \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
 
-          TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.value')
+          TOKEN=$(echo "$RESPONSE" | jq -r '.value')
 
           if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "ERROR: Unable to obtain GitHub OIDC token."
+            echo "ERROR: Could not obtain OIDC token."
+            echo "$RESPONSE"
             exit 1
           fi
 
+          echo "OIDC token successfully obtained."
+
           PAYLOAD=$(echo "$TOKEN" | cut -d '.' -f2)
 
-          # Add base64 padding if necessary
           case $((${#PAYLOAD} % 4)) in
-            2) PAYLOAD="${PAYLOAD}==" ;;
-            3) PAYLOAD="${PAYLOAD}=" ;;
+            2)
+              PAYLOAD="${PAYLOAD}=="
+              ;;
+            3)
+              PAYLOAD="${PAYLOAD}="
+              ;;
           esac
+
+          echo ""
+          echo "=========================================="
+          echo "OIDC CLAIMS"
+          echo "=========================================="
 
           echo "$PAYLOAD" \
             | base64 -d 2>/dev/null \
@@ -154,62 +143,3 @@ jobs:
               }'
 
           echo "=========================================="
-
-
-      # --------------------------------------------------------
-      # AWS OIDC Authentication
-      # --------------------------------------------------------
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::444083008248:role/GitHubActions-Terraform-Role
-          aws-region: ap-south-1
-          role-session-name: GitHubActionsTerraform
-          audience: sts.amazonaws.com
-
-
-      # --------------------------------------------------------
-      # Verify AWS identity
-      # --------------------------------------------------------
-
-      - name: Verify AWS identity
-        run: |
-          echo "AWS identity:"
-          aws sts get-caller-identity
-
-
-      # --------------------------------------------------------
-      # Terraform Format
-      # --------------------------------------------------------
-
-      - name: Terraform Format Check
-        run: |
-          terraform fmt -check -recursive
-
-
-      # --------------------------------------------------------
-      # Terraform Init
-      # --------------------------------------------------------
-
-      - name: Terraform Init
-        run: |
-          terraform init -input=false
-
-
-      # --------------------------------------------------------
-      # Terraform Validate
-      # --------------------------------------------------------
-
-      - name: Terraform Validate
-        run: |
-          terraform validate
-
-
-      # --------------------------------------------------------
-      # Terraform Plan
-      # --------------------------------------------------------
-
-      - name: Terraform Plan
-        run: |
-          terraform plan -input=false
