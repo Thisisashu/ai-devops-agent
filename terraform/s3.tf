@@ -1,3 +1,3 @@
-resource "aws_s3_bucket" "example" {
-  bucket = "ai-devops-agent-example"
+resource "aws_s3_bucket" "example2" {
+  bucket = "example2-bucket"
 }
