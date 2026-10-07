@@ -1,8 +1,12 @@
 """Entry point for the FastAPI application."""
 import logging
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import uvicorn
-
 from app.api import app
 
 logging.basicConfig(

@@ -17,18 +17,18 @@ on:
         default: "false"
 
 permissions:
-  id-token: write   # OIDC
+  id-token: write
   contents: read
   pull-requests: write
 
 env:
   TF_VERSION: "1.16.1"
-  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
   TF_DIR: terraform
 
 jobs:
   # -------------------------------------------------------------------------
-  # terraform-plan — runs on every PR
+  # terraform-plan — runs on every PR and workflow_dispatch
   # -------------------------------------------------------------------------
   terraform-plan:
     name: Terraform Plan
@@ -39,10 +39,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
@@ -68,14 +69,16 @@ jobs:
 
       - name: Terraform Plan
         id: plan
-        run: terraform plan -input=false -no-color -out=tfplan
+        run: terraform plan -input=false -no-color -out=tfplan 2>&1 | tee plan.txt
         working-directory: ${{ env.TF_DIR }}
 
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ github.run_id }}
-          path: ${{ env.TF_DIR }}/tfplan
+          path: |
+            ${{ env.TF_DIR }}/tfplan
+            ${{ env.TF_DIR }}/plan.txt
           retention-days: 7
 
       - name: Comment plan on PR
@@ -83,6 +86,12 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+            let planOutput = '';
+            try {
+              planOutput = fs.readFileSync('${{ env.TF_DIR }}/plan.txt', 'utf8').slice(-50000);
+            } catch(e) { planOutput = 'Plan output not available'; }
+
             const output = `#### Terraform Format 🖌 \`${{ steps.fmt.outcome }}\`
             #### Terraform Init ⚙️ \`${{ steps.init.outcome }}\`
             #### Terraform Validate 🤖 \`${{ steps.validate.outcome }}\`
@@ -91,19 +100,20 @@ jobs:
             <details><summary>Show Plan</summary>
 
             \`\`\`terraform
-            ${{ steps.plan.outputs.stdout }}
+            ${planOutput}
             \`\`\`
 
             </details>
 
-            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*
+            *Merge this PR and approve the \`production\` environment to apply.*`;
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: output
-            })
+            });
 
   # -------------------------------------------------------------------------
   # terraform-apply — runs on merge to main OR manual dispatch with apply=true
@@ -115,16 +125,17 @@ jobs:
     if: |
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.apply == 'true')
-    environment: production   # requires manual approval in GitHub
+    environment: production
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
@@ -146,8 +157,14 @@ jobs:
       - name: Terraform Apply
         run: |
           if [ -f tfplan ]; then
+            echo "Applying saved plan..."
             terraform apply -input=false -auto-approve tfplan
           else
+            echo "No saved plan found, running fresh apply..."
             terraform apply -input=false -auto-approve
           fi
+        working-directory: ${{ env.TF_DIR }}
+
+      - name: Show outputs
+        run: terraform output -no-color 2>/dev/null || echo "No outputs defined"
         working-directory: ${{ env.TF_DIR }}
